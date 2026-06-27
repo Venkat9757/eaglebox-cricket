@@ -181,6 +181,14 @@ async function createBooking({
 
   const trimmedName = String(customer_name || '').trim();
   const trimmedPhone = String(phone || '').trim();
+  const t0 = Date.now();
+  let lastMark = t0;
+
+  const logElapsed = (label) => {
+    const now = Date.now();
+    console.log(`BOOKING TIMING ${label}: ${now - lastMark}ms (total ${now - t0}ms)`);
+    lastMark = now;
+  };
 
   if (!trimmedName) {
     return { success: false, error: 'Customer name is required' };
@@ -190,7 +198,9 @@ async function createBooking({
     return { success: false, error: 'Please enter a valid phone number' };
   }
 
+  console.log(`BOOKING TIMING START: ${t0}`);
   const client = await pool.connect();
+  logElapsed('AFTER pool.connect()');
   let insertedBooking;
 
   try {
@@ -202,6 +212,7 @@ async function createBooking({
       [slot.branchId, Number(slot.date.replace(/-/g, ''))]
     );
     console.log('AFTER LOCK');
+    logElapsed('AFTER pg_advisory_xact_lock()');
 
     console.log('BEFORE AVAILABILITY');
     const availability = await checkAvailability({
@@ -211,9 +222,11 @@ async function createBooking({
       endTime: slot.endTime,
     }, client);
     console.log('AFTER AVAILABILITY');
+    logElapsed('AFTER checkAvailability()');
 
     if (!availability.available) {
       await client.query('ROLLBACK');
+      logElapsed('AFTER ROLLBACK (unavailable)');
       return {
         success: false,
         error: availability.error,
@@ -269,10 +282,12 @@ async function createBooking({
       ]
     );
     console.log('AFTER INSERT');
+    logElapsed('AFTER INSERT');
 
     console.log('BEFORE COMMIT');
     await client.query('COMMIT');
     console.log('AFTER COMMIT');
+    logElapsed('AFTER COMMIT');
 
     insertedBooking = {
       id: result.rows[0].id,
@@ -293,6 +308,7 @@ async function createBooking({
         console.log('BEFORE EMAIL DETAILS');
         const details = await getBookingEmailDetails(insertedBooking.id);
         console.log('AFTER EMAIL DETAILS');
+        console.log(`BOOKING TIMING AFTER getBookingEmailDetails(): ${Date.now() - t0}ms total`);
 
         if (details?.email) {
           console.log('BEFORE EMAIL SEND');
@@ -317,6 +333,7 @@ async function createBooking({
       }
     })();
   });
+  console.log(`BOOKING TIMING TOTAL createBooking(): ${Date.now() - t0}ms`);
   return {
   success: true,
   booking: {

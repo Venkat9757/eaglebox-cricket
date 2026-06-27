@@ -31,22 +31,35 @@ router.get('/grounds/:branchId', async (req, res) => {
   }
 });
 router.post('/bookings', authMiddleware, async (req, res) => {
+  const requestStart = Date.now();
+
   try {
+    console.log(`BOOKING REQUEST START: ${requestStart}`);
+    console.time('BOOKING_REQUEST');
+    console.log('BEFORE createBooking');
     const result = await bookingService.createBooking({
       ...req.body,
       user_id: req.user.id,
     });
+    console.log('AFTER createBooking');
 
     if (!result.success) {
+      console.timeEnd('BOOKING_REQUEST');
+      console.log(`BOOKING REQUEST END (400): ${Date.now() - requestStart}ms`);
       return res.status(400).json({
         error: result.error,
       });
     }
 
+    console.log('BEFORE res.status(201).json');
+    console.timeEnd('BOOKING_REQUEST');
+    console.log(`BOOKING REQUEST END (201): ${Date.now() - requestStart}ms`);
     return res.status(201).json(result);
 
   } catch (error) {
     console.error('Booking creation failed:', error);
+    console.timeEnd('BOOKING_REQUEST');
+    console.log(`BOOKING REQUEST END (500): ${Date.now() - requestStart}ms`);
 
     return res.status(500).json({
       error: 'Booking creation failed',
