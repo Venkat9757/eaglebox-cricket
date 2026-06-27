@@ -30,6 +30,29 @@ router.get('/grounds/:branchId', async (req, res) => {
     return res.status(500).json({ error: 'Failed to fetch grounds' });
   }
 });
+router.post('/bookings', authMiddleware, async (req, res) => {
+  try {
+    const result = await bookingService.createBooking({
+      ...req.body,
+      user_id: req.user.id,
+    });
+
+    if (!result.success) {
+      return res.status(400).json({
+        error: result.error,
+      });
+    }
+
+    return res.status(201).json(result);
+
+  } catch (error) {
+    console.error('Booking creation failed:', error);
+
+    return res.status(500).json({
+      error: 'Booking creation failed',
+    });
+  }
+});
 
 router.post('/check-availability', async (req, res) => {
   try {
@@ -64,30 +87,7 @@ router.post('/check-availability', async (req, res) => {
   }
 });
 
-router.post('/bookings', authMiddleware, async (req, res) => {
-  try {
-    const bookingData = {
-      ...req.body,
-      user_id: req.user.id,
-    };
-
-    const result = await bookingService.createBooking(bookingData);
-
-    if (!result.success) {
-      return res.status(400).json({
-        error: result.error,
-      });
-    }
-
-    return res.status(201).json(result);
-  } catch (error) {
-    console.error('Booking creation failed:', error);
-
-    return res.status(500).json({
-      error: 'Booking creation failed',
-    });
-  }
-});
+ 
 
 router.get('/my-bookings', authMiddleware, async (req, res) => {
   try {

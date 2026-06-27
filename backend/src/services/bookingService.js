@@ -196,72 +196,84 @@ async function createBooking({
   try {
     await client.query('BEGIN');
 
+    console.log('BEFORE LOCK');
     await client.query(
       'SELECT pg_advisory_xact_lock($1, $2)',
       [slot.branchId, Number(slot.date.replace(/-/g, ''))]
     );
+    console.log('AFTER LOCK');
 
+    console.log('BEFORE AVAILABILITY');
     const availability = await checkAvailability({
       branchId: slot.branchId,
       date: slot.date,
       startTime: slot.startTime,
       endTime: slot.endTime,
     }, client);
+    console.log('AFTER AVAILABILITY');
 
-  if (!availability.available) {
+    if (!availability.available) {
       await client.query('ROLLBACK');
-    return {
-      success: false,
-      error: availability.error,
-    };
-  }
-const amount =
-  ((slot.requestedEnd - slot.requestedStart) / 60) * 800;
-  const result = await client.query(
-  `
-  INSERT INTO bookings
-  (
-    customer_name,
-    phone,
-    branch_id,
-    ground_id,
-    booking_date,
-    start_time,
-    end_time,
-    status,
-    payment_status,
-    payment_method,
-    amount,
-    payment_date,
-    user_id,
-    created_at
-  )
-  VALUES
-  (
-    $1,$2,$3,$4,$5,$6,$7,
-    'confirmed',
-    'paid',
-    'UPI',
-    $8,
-    NOW(),
-    $9,
-    NOW()
-  )
-  RETURNING id, created_at
-  `,
-  [
-    trimmedName,
-    trimmedPhone,
-    slot.branchId,
-    availability.groundId,
-    slot.date,
-    slot.startTime,
-    slot.endTime,
-    amount,
-    user_id,
-  ]
-);
+      return {
+        success: false,
+        error: availability.error,
+      };
+    }
+
+    const amount =
+      ((slot.requestedEnd - slot.requestedStart) / 60) * 800;
+
+    console.log('BEFORE INSERT');
+    const result = await client.query(
+      `
+      INSERT INTO bookings
+      (
+        customer_name,
+        phone,
+        branch_id,
+        ground_id,
+        booking_date,
+        start_time,
+        end_time,
+        status,
+        payment_status,
+        payment_method,
+        amount,
+        payment_date,
+        user_id,
+        created_at
+      )
+      VALUES
+      (
+        $1,$2,$3,$4,$5,$6,$7,
+        'confirmed',
+        'paid',
+        'UPI',
+        $8,
+        NOW(),
+        $9,
+        NOW()
+      )
+      RETURNING id, created_at
+      `,
+      [
+        trimmedName,
+        trimmedPhone,
+        slot.branchId,
+        availability.groundId,
+        slot.date,
+        slot.startTime,
+        slot.endTime,
+        amount,
+        user_id,
+      ]
+    );
+    console.log('AFTER INSERT');
+
+    console.log('BEFORE COMMIT');
     await client.query('COMMIT');
+    console.log('AFTER COMMIT');
+
     insertedBooking = {
       id: result.rows[0].id,
       createdAt: result.rows[0].created_at,
@@ -276,9 +288,12 @@ const amount =
   }
 
 try {
+  console.log('BEFORE EMAIL DETAILS');
   const details = await getBookingEmailDetails(insertedBooking.id);
+  console.log('AFTER EMAIL DETAILS');
 
   if (details?.email) {
+    console.log('BEFORE EMAIL SEND');
     await sendBookingConfirmationEmail({
       customerEmail: details.email,
       customerName: details.customer_name,
@@ -290,6 +305,7 @@ try {
       endTime: details.end_time,
       createdAt: details.created_at,
     });
+    console.log('AFTER EMAIL SEND');
   }
 } catch (emailError) {
   console.error(
