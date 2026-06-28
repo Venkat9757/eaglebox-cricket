@@ -23,6 +23,8 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [message, setMessage] = useState("");
+  const [corporateAction, setCorporateAction] = useState({});
+  const [exportingCsv, setExportingCsv] = useState(false);
 
   const metrics = useMemo(() => {
     if (analytics) {
@@ -136,20 +138,39 @@ export default function AdminDashboard() {
 
   const updateCorporateRequestStatus = async (requestId, status) => {
     try {
+      setCorporateAction((prev) => ({
+        ...prev,
+        [requestId]: { status, loading: true, error: "" },
+      }));
       await axios.patch(
         `${API_URL}/api/corporate-requests/${requestId}/status`,
         { status },
         { headers: { Authorization: `Bearer ${token}` } }
       );
+      setCorporateRequests((prev) =>
+        prev.map((request) =>
+          request.id === requestId
+            ? { ...request, status }
+            : request
+        )
+      );
       setMessage(`Corporate request ${status}.`);
-      await fetchData();
+      setCorporateAction((prev) => ({
+        ...prev,
+        [requestId]: { status, loading: false, error: "" },
+      }));
     } catch (error) {
       console.error(error);
+      setCorporateAction((prev) => ({
+        ...prev,
+        [requestId]: { status, loading: false, error: "Failed to update corporate request." },
+      }));
       setMessage("Failed to update corporate request.");
     }
   };
 
   const exportBookings = () => {
+    setExportingCsv(true);
     axios.get(`${API_URL}/api/bookings-export`, {
       headers: { Authorization: `Bearer ${token}` },
       responseType: "blob",
@@ -162,9 +183,12 @@ export default function AdminDashboard() {
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
+      setMessage("Bookings exported to CSV.");
+      setExportingCsv(false);
     }).catch((error) => {
       console.error(error);
       setMessage("Failed to export bookings.");
+      setExportingCsv(false);
     });
   };
 
@@ -183,8 +207,8 @@ export default function AdminDashboard() {
             <h1 className="mt-1 text-3xl font-black">Admin dashboard</h1>
           </div>
           <div className="flex flex-wrap gap-3">
-            <button onClick={exportBookings} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-800">
-              Export CSV
+            <button onClick={exportBookings} disabled={exportingCsv} className="rounded-full border border-slate-200 bg-white px-5 py-3 text-sm font-black text-slate-800 disabled:cursor-not-allowed disabled:opacity-60">
+              {exportingCsv ? "Exporting..." : "Export CSV"}
             </button>
             <button
               onClick={() => fetchData({ showRefresh: true })}
@@ -369,14 +393,41 @@ export default function AdminDashboard() {
                   <div>Grounds: <span className="font-semibold">{request.grounds_required}</span></div>
                 </div>
                 {request.additional_notes ? <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm text-slate-700">{request.additional_notes}</p> : null}
-                <div className="mt-4 flex flex-col gap-2 sm:flex-row">
-                  <button onClick={() => updateCorporateRequestStatus(request.id, "approved")} className="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-bold text-white">
-                    Approve
-                  </button>
-                  <button onClick={() => updateCorporateRequestStatus(request.id, "rejected")} className="rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-red-700 ring-1 ring-red-200">
-                    Reject
-                  </button>
-                </div>
+                {request.status === "pending" ? (
+                  <>
+                    <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                      <button
+                        disabled={Boolean(corporateAction[request.id]?.loading)}
+                        onClick={() => updateCorporateRequestStatus(request.id, "approved")}
+                        className="rounded-xl bg-emerald-700 px-4 py-2.5 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {corporateAction[request.id]?.loading && corporateAction[request.id]?.status === "approved"
+                          ? "Approving..."
+                          : "Approve"}
+                      </button>
+                      <button
+                        disabled={Boolean(corporateAction[request.id]?.loading)}
+                        onClick={() => updateCorporateRequestStatus(request.id, "rejected")}
+                        className="rounded-xl bg-white px-4 py-2.5 text-sm font-bold text-red-700 ring-1 ring-red-200 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {corporateAction[request.id]?.loading && corporateAction[request.id]?.status === "rejected"
+                          ? "Rejecting..."
+                          : "Reject"}
+                      </button>
+                    </div>
+                    {corporateAction[request.id]?.error ? (
+                      <p className="mt-3 text-sm font-semibold text-red-700">{corporateAction[request.id].error}</p>
+                    ) : null}
+                  </>
+                ) : (
+                  <p className={`mt-4 inline-flex rounded-full px-3 py-1 text-xs font-black uppercase ${
+                    request.status === "approved"
+                      ? "bg-emerald-50 text-emerald-800"
+                      : "bg-red-50 text-red-800"
+                  }`}>
+                    {request.status}
+                  </p>
+                )}
               </article>
             ))}
           </div>

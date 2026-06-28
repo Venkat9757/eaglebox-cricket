@@ -22,6 +22,9 @@ export default function CustomerDashboard() {
   const [selectedBooking, setSelectedBooking] = useState(null);
   const [rating, setRating] = useState(5);
   const [review, setReview] = useState("");
+  const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [reviewMessage, setReviewMessage] = useState("");
+  const [reviewError, setReviewError] = useState("");
 
   const upcomingBookings = useMemo(
     () => bookings.filter((booking) => booking.status === "confirmed" || booking.status === "pending"),
@@ -47,22 +50,51 @@ export default function CustomerDashboard() {
     fetchBookings();
   }, []);
 
-  const submitFeedback = async () => {
+  const submitFeedback = async (event) => {
+    event?.preventDefault?.();
+    console.log("submitFeedback clicked", {
+      bookingId: selectedBooking?.id,
+      rating,
+      reviewLength: review.length,
+    });
+
+    if (!selectedBooking?.id) {
+      console.log("submitFeedback aborted: no selected booking");
+      return;
+    }
+
     try {
+      setReviewError("");
+      setReviewMessage("");
+      setSubmittingFeedback(true);
       const token = localStorage.getItem("token");
+      console.log("submitFeedback sending request");
       await axios.post(
         `${API_URL}/api/feedback`,
         { bookingId: selectedBooking.id, rating, review },
         { headers: { Authorization: `Bearer ${token}` } }
       );
+      console.log("submitFeedback success");
+      setBookings((prev) =>
+        prev.map((booking) =>
+          booking.id === selectedBooking.id
+            ? { ...booking, feedback_submitted: true }
+            : booking
+        )
+      );
+      setReviewMessage("Review submitted successfully.");
       setMessage("Thanks. Your feedback has been recorded.");
       setShowFeedbackModal(false);
       setSelectedBooking(null);
       setRating(5);
       setReview("");
     } catch (error) {
-      console.error(error);
-      setMessage(error.response?.data?.error || "Failed to submit feedback.");
+      console.error("submitFeedback failed", error);
+      const feedbackError = error.response?.data?.error || "Failed to submit feedback.";
+      setReviewError(feedbackError);
+      setMessage(feedbackError);
+    } finally {
+      setSubmittingFeedback(false);
     }
   };
 
@@ -92,6 +124,11 @@ export default function CustomerDashboard() {
         {message ? (
           <div className="mt-6 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
             {message}
+          </div>
+        ) : null}
+        {reviewMessage ? (
+          <div className="mt-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-semibold text-emerald-800">
+            {reviewMessage}
           </div>
         ) : null}
 
@@ -171,8 +208,12 @@ export default function CustomerDashboard() {
                           }}
                           className="rounded-xl bg-emerald-700 px-4 py-3 text-sm font-bold text-white hover:bg-emerald-800"
                         >
-                          Give feedback
+                          Leave Review
                         </button>
+                      ) : booking.status === "completed" && booking.feedback_submitted ? (
+                        <span className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-bold text-emerald-800">
+                          Review Submitted
+                        </span>
                       ) : null}
                     </div>
                   </div>
@@ -208,15 +249,30 @@ export default function CustomerDashboard() {
               placeholder="Share what went well or what should improve."
               className="mt-2 w-full rounded-xl border border-slate-200 p-3"
             />
+            {reviewError ? (
+              <div className="mt-4 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                {reviewError}
+              </div>
+            ) : null}
 
-            <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-end">
-              <button onClick={() => setShowFeedbackModal(false)} className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold">
-                Cancel
-              </button>
-              <button onClick={submitFeedback} className="rounded-xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white">
-                Submit feedback
-              </button>
-            </div>
+            <form onSubmit={submitFeedback} className="mt-6 space-y-4">
+              <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
+                <button
+                  type="button"
+                  onClick={() => setShowFeedbackModal(false)}
+                  className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-bold"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={submittingFeedback}
+                  className="rounded-xl bg-emerald-700 px-5 py-3 text-sm font-bold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {submittingFeedback ? "Submitting..." : "Submit Review"}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       ) : null}
