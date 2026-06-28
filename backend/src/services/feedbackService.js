@@ -47,30 +47,38 @@ async function createFeedback({
     );
   }
 
-  const result = await pool.query(
-    `
-    INSERT INTO feedback
-    (
-      booking_id,
-      user_id,
-      rating,
-      review
-    )
-    VALUES
-    (
-      $1,$2,$3,$4
-    )
-    RETURNING *
-    `,
-    [
-      bookingId,
-      userId,
-      rating,
-      review,
-    ]
-  );
+  try {
+    const result = await pool.query(
+      `
+      INSERT INTO feedback
+      (
+        booking_id,
+        user_id,
+        rating,
+        review
+      )
+      VALUES
+      (
+        $1,$2,$3,$4
+      )
+      RETURNING *
+      `,
+      [
+        bookingId,
+        userId,
+        rating,
+        review,
+      ]
+    );
 
-  return result.rows[0];
+    return result.rows[0];
+  } catch (error) {
+    if (error.code === "23505") {
+      throw new Error("Feedback already submitted for this booking.");
+    }
+
+    throw error;
+  }
 }
 
 // Admin - View All Feedback

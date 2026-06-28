@@ -373,19 +373,54 @@ router.get('/corporate-requests', adminMiddleware, async (req, res) => {
   }
 });
 
+router.get('/corporate-requests/:id/availability', adminMiddleware, async (req, res) => {
+  try {
+    const requestId = Number(req.params.id);
+    if (!Number.isInteger(requestId) || requestId <= 0) {
+      return res.status(400).json({ error: 'Invalid request id' });
+    }
+
+    const data = await bookingService.getGroundAvailabilityForCorporateRequest(requestId);
+    return res.json(data);
+  } catch (error) {
+    console.error('Failed to fetch corporate availability:', error);
+    return res.status(400).json({ error: error.message || 'Failed to fetch availability' });
+  }
+});
+
+router.patch('/corporate-requests/:id/ground', adminMiddleware, async (req, res) => {
+  try {
+    const requestId = Number(req.params.id);
+    const { groundId } = req.body;
+
+    const updated = await bookingService.assignCorporateRequestGround(requestId, groundId);
+    return res.json(updated);
+  } catch (error) {
+    console.error('Failed to assign corporate ground:', error);
+    return res.status(400).json({ error: error.message || 'Failed to assign ground' });
+  }
+});
+
 router.patch('/corporate-requests/:id/status', adminMiddleware, async (req, res) => {
   try {
     const requestId = Number(req.params.id);
-    const { status } = req.body;
+    const { status, groundId } = req.body;
 
     if (!Number.isInteger(requestId) || requestId <= 0) {
       return res.status(400).json({ error: 'Invalid request id' });
     }
 
-    const updated = await bookingService.updateCorporateRequestStatus(requestId, status);
+    const updated = await bookingService.updateCorporateRequestStatus(requestId, status, {
+      groundId: groundId ? Number(groundId) : null,
+    });
     return res.json(updated);
   } catch (error) {
     console.error('Failed to update corporate request:', error);
+    if (error.code === 'GROUND_ASSIGNMENT_REQUIRED') {
+      return res.status(409).json({
+        error: error.message || 'Ground assignment required',
+      });
+    }
     if (error.code === 'CORPORATE_REQUEST_CONFLICT') {
       return res.status(409).json({
         error: error.message || 'Booking conflict detected',

@@ -40,40 +40,112 @@ function parseCorporateTimeRange(value) {
   const parts = text.split(/\s*-\s*/).map((part) => part.trim()).filter(Boolean);
 
   if (parts.length < 2) {
-    throw new Error('Preferred time must include a start and end time, for example 10:00 AM - 12:00 PM');
+    throw new Error('Preferred time must include a start and end time');
   }
 
-  const startMatch = parts[0].match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-  const endMatch = parts[1].match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
-
-  if (!startMatch || !endMatch) {
-    throw new Error('Preferred time must be in a valid range format');
-  }
-
-  const startHour = Number(startMatch[1]);
-  const startMinute = Number(startMatch[2]);
-  const endHour = Number(endMatch[1]);
-  const endMinute = Number(endMatch[2]);
-  const startPeriod = (startMatch[3] || '').toUpperCase();
-  const endPeriod = (endMatch[3] || '').toUpperCase();
-
-  const to24Hour = (hour, minute, period, fallbackIsStart = false) => {
-    let normalizedHour = hour;
-
-    if (period) {
-      if (period === 'PM' && normalizedHour < 12) normalizedHour += 12;
-      if (period === 'AM' && normalizedHour === 12) normalizedHour = 0;
-    } else if (fallbackIsStart && normalizedHour < 10) {
-      normalizedHour += 12;
+  const parseTimePart = (part, assumeStart = false) => {
+    const match = part.match(/(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+    if (!match) {
+      throw new Error('Preferred time must be in a valid range format');
     }
 
-    return `${String(normalizedHour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    let hour = Number(match[1]);
+    const minute = Number(match[2]);
+    const period = (match[3] || '').toUpperCase();
+
+    if (period === 'PM' && hour < 12) hour += 12;
+    if (period === 'AM' && hour === 12) hour = 0;
+    if (!period && assumeStart && hour < 10) hour += 12;
+
+    return {
+      time24: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`,
+      label: `${to12HourLabel(`${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`)}`,
+    };
   };
 
+  const start = parseTimePart(parts[0], true);
+  const end = parseTimePart(parts[1], false);
+
   return {
-    startTime: to24Hour(startHour, startMinute, startPeriod, true),
-    endTime: to24Hour(endHour, endMinute, endPeriod, false),
-    label: `${to12HourLabel(to24Hour(startHour, startMinute, startPeriod, true))} - ${to12HourLabel(to24Hour(endHour, endMinute, endPeriod, false))}`,
+    startTime: start.time24,
+    endTime: end.time24,
+    label: `${start.label} - ${end.label}`,
+  };
+}
+
+async function getCorporateRequestAvailability(requestId) {
+  const requestResult = await pool.query(
+    `
+    SELECT cr.*, b.branch_name
+    FROM corporate_requests cr
+    LEFT JOIN branches b ON b.id = cr.preferred_branch_id
+    WHERE cr.id = $1
+    `,
+    [requestId]
+  );
+
+  const request = requestResult.rows[0];
+
+  if (!request) {
+    throw new Error('Corporate request not found');
+  }
+
+  const timeRange = parseCorporateTimeRange(request.preferred_time);
+
+  const { rows: grounds } = await pool.query(
+    `
+    SELECT id, ground_name
+    FROM grounds
+    WHERE branch_id = $1
+    ORDER BY id
+    `,
+    [request.preferred_branch_id]
+  );
+
+  const { rows: conflicts } = await pool.query(
+    `
+    SELECT
+      b.id AS booking_id,
+      b.customer_name,
+      b.phone AS customer_phone,
+      b.booking_date,
+      b.start_time,
+      b.end_time,
+      b.ground_id
+    FROM bookings b
+    WHERE b.branch_id = $1
+      AND b.booking_date = $2
+      AND b.status IN ('confirmed', 'completed', 'approved')
+      AND (b.start_time < $4 AND b.end_time > $3)
+    `,
+    [request.preferred_branch_id, request.event_date, timeRange.startTime, timeRange.endTime]
+  );
+
+  const occupiedGroundIds = new Set(conflicts.map((booking) => booking.ground_id));
+  const availableGrounds = grounds.map((ground) => {
+    const conflict = conflicts.find((booking) => booking.ground_id === ground.id);
+    return {
+      id: ground.id,
+      ground_name: ground.ground_name,
+      available: !occupiedGroundIds.has(ground.id),
+      conflict: conflict
+        ? {
+            booking_id: conflict.booking_id,
+            customer_name: conflict.customer_name,
+            customer_phone: conflict.customer_phone,
+            booking_date: conflict.booking_date,
+            booking_time: `${to12HourLabel(conflict.start_time)} - ${to12HourLabel(conflict.end_time)}`,
+          }
+        : null,
+    };
+  });
+
+  return {
+    request: {
+      ...request,
+      requested_time_label: timeRange.label,
+    },
+    availableGrounds,
   };
 }
 
@@ -81,6 +153,7 @@ async function findCorporateRequestConflict({
   preferredBranchId,
   eventDate,
   preferredTime,
+  groundId,
 }) {
   const timeRange = parseCorporateTimeRange(preferredTime);
 
@@ -96,27 +169,29 @@ async function findCorporateRequestConflict({
       br.branch_name,
       g.ground_name
     FROM bookings b
-    LEFT JOIN branches br
-      ON br.id = b.branch_id
-    LEFT JOIN grounds g
-      ON g.id = b.ground_id
-    WHERE b.branch_id = $1
-      AND b.booking_date = $2
-      AND b.status IN ('confirmed', 'completed', 'approved')
-      AND (
-        b.start_time < $4
-        AND b.end_time > $3
+      LEFT JOIN branches br
+        ON br.id = b.branch_id
+      LEFT JOIN grounds g
+        ON g.id = b.ground_id
+      WHERE b.branch_id = $1
+        AND ($5::int IS NULL OR b.ground_id = $5)
+        AND b.booking_date = $2
+        AND b.status IN ('confirmed', 'completed', 'approved')
+        AND (
+          b.start_time < $4
+          AND b.end_time > $3
       )
     ORDER BY b.start_time ASC
     LIMIT 1
     `,
-    [
-      preferredBranchId,
-      eventDate,
-      timeRange.startTime,
-      timeRange.endTime,
-    ]
-  );
+      [
+        preferredBranchId,
+        eventDate,
+        timeRange.startTime,
+        timeRange.endTime,
+        groundId || null,
+      ]
+    );
 
   const conflict = rows[0];
 
@@ -729,34 +804,61 @@ async function updateCancellationRequestStatus(
     throw new Error('Invalid cancellation status');
   }
 
-  const requestResult = await pool.query(
-    `
-    UPDATE cancellation_requests
-    SET status = $1
-    WHERE id = $2
-      AND status = 'pending'
-    RETURNING *
-    `,
-    [status, requestId]
-  );
+  const client = await pool.connect();
+  let request = null;
 
-  const request = requestResult.rows[0];
+  try {
+    await client.query('BEGIN');
 
-  if (!request) {
-    throw new Error("Request not found");
-  }
-
-  if (status === "approved") {
-    await pool.query(
+    const requestResult = await client.query(
       `
-      UPDATE bookings
-      SET
-  status = 'cancelled',
-  payment_status = 'refunded'
+      SELECT *
+      FROM cancellation_requests
       WHERE id = $1
+      FOR UPDATE
       `,
-      [request.booking_id]
+      [requestId]
     );
+
+    request = requestResult.rows[0];
+
+    if (!request || request.status !== 'pending') {
+      throw new Error("Request not found");
+    }
+
+    await client.query(
+      `
+      UPDATE cancellation_requests
+      SET status = $1
+      WHERE id = $2
+      `,
+      [status, requestId]
+    );
+
+    if (status === "approved") {
+      await client.query(
+        `
+        UPDATE bookings
+        SET
+          status = 'cancelled',
+          payment_status = 'refunded'
+        WHERE id = $1
+        `,
+        [request.booking_id]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('CANCELLATION STATUS ROLLBACK ERROR:', rollbackError);
+    }
+
+    throw error;
+  } finally {
+    client.release();
   }
 
   try {
@@ -787,7 +889,10 @@ async function updateCancellationRequestStatus(
     console.error("CANCELLATION STATUS EMAIL ERROR:", emailError);
   }
 
-  return request;
+  return {
+    id: Number(requestId),
+    status,
+  };
 }
 
 async function createCorporateRequest(payload) {
@@ -801,6 +906,7 @@ async function createCorporateRequest(payload) {
   const eventDate = normalizeDate(payload.event_date || payload.eventDate);
   const preferredTime = String(payload.preferred_time || payload.preferredTime || '').trim();
   const groundsRequired = Number(payload.grounds_required || payload.groundsRequired || 1);
+  const groundId = payload.ground_id ? Number(payload.ground_id) : null;
   const additionalNotes = String(payload.additional_notes || payload.additionalNotes || '').trim();
 
   const allowedEventTypes = [
@@ -834,10 +940,11 @@ async function createCorporateRequest(payload) {
       event_date,
       preferred_time,
       grounds_required,
+      ground_id,
       additional_notes,
       status
     )
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'pending')
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'pending')
     RETURNING *
     `,
     [
@@ -851,6 +958,7 @@ async function createCorporateRequest(payload) {
       eventDate,
       preferredTime,
       groundsRequired,
+      groundId,
       additionalNotes || null,
     ]
   );
@@ -858,15 +966,22 @@ async function createCorporateRequest(payload) {
   return rows[0];
 }
 
+async function getGroundAvailabilityForCorporateRequest(requestId) {
+  return getCorporateRequestAvailability(requestId);
+}
+
 async function getCorporateRequests() {
   const { rows } = await pool.query(
     `
     SELECT
       cr.*,
-      b.branch_name
+      b.branch_name,
+      g.ground_name AS assigned_ground_name
     FROM corporate_requests cr
     LEFT JOIN branches b
       ON b.id = cr.preferred_branch_id
+    LEFT JOIN grounds g
+      ON g.id = cr.ground_id
     ORDER BY cr.created_at DESC
     `
   );
@@ -874,57 +989,197 @@ async function getCorporateRequests() {
   return rows;
 }
 
-async function updateCorporateRequestStatus(requestId, status) {
+async function updateCorporateRequestStatus(requestId, status, options = {}) {
   if (!['pending', 'approved', 'rejected'].includes(status)) {
     throw new Error('Invalid corporate request status');
   }
 
-  const requestResult = await pool.query(
-    `
-    SELECT *
-    FROM corporate_requests
-    WHERE id = $1
-    `,
-    [requestId]
-  );
+  const client = await pool.connect();
 
-  const existingRequest = requestResult.rows[0];
+  try {
+    await client.query('BEGIN');
 
-  if (!existingRequest) {
-    throw new Error('Corporate request not found');
-  }
+    const requestResult = await client.query(
+      `
+      SELECT *
+      FROM corporate_requests
+      WHERE id = $1
+      FOR UPDATE
+      `,
+      [requestId]
+    );
 
-  if (status === 'approved') {
-    const conflictResult = await findCorporateRequestConflict({
-      preferredBranchId: existingRequest.preferred_branch_id,
-      eventDate: existingRequest.event_date,
-      preferredTime: existingRequest.preferred_time,
-    });
+    const existingRequest = requestResult.rows[0];
 
-    if (conflictResult.conflict) {
-      const error = new Error('Booking conflict detected for this corporate request.');
-      error.code = 'CORPORATE_REQUEST_CONFLICT';
-      error.conflict = conflictResult.booking;
-      error.timeRange = conflictResult.timeRange;
-      throw error;
+    if (!existingRequest) {
+      throw new Error('Corporate request not found');
     }
+
+    if (status === 'approved') {
+      const requestedGroundId = options.groundId ?? existingRequest.ground_id;
+
+      if (!requestedGroundId) {
+        const error = new Error('Ground assignment required before approval.');
+        error.code = 'GROUND_ASSIGNMENT_REQUIRED';
+        throw error;
+      }
+
+      const groundLockKey = Number(existingRequest.preferred_branch_id) || 0;
+      await client.query('SELECT pg_advisory_xact_lock($1, $2)', [groundLockKey, Number(requestedGroundId)]);
+
+      const groundResult = await client.query(
+        `
+        SELECT id, branch_id
+        FROM grounds
+        WHERE id = $1
+        `,
+        [requestedGroundId]
+      );
+
+      const ground = groundResult.rows[0];
+
+      if (!ground) {
+        throw new Error('Ground not found');
+      }
+
+      if (Number(ground.branch_id) !== Number(existingRequest.preferred_branch_id)) {
+        throw new Error('Selected ground does not belong to the requested branch');
+      }
+
+      const conflictResult = await findCorporateRequestConflict({
+        preferredBranchId: existingRequest.preferred_branch_id,
+        eventDate: existingRequest.event_date,
+        preferredTime: existingRequest.preferred_time,
+        groundId: requestedGroundId,
+      });
+
+      if (conflictResult.conflict) {
+        const error = new Error('Booking conflict detected for this corporate request.');
+        error.code = 'CORPORATE_REQUEST_CONFLICT';
+        error.conflict = conflictResult.booking;
+        error.timeRange = conflictResult.timeRange;
+        throw error;
+      }
+
+      const updatedRequest = await client.query(
+        `
+        UPDATE corporate_requests
+        SET ground_id = $1,
+            status = 'approved',
+            updated_at = NOW()
+        WHERE id = $2
+        RETURNING *
+        `,
+        [requestedGroundId, requestId]
+      );
+
+      await client.query('COMMIT');
+      return updatedRequest.rows[0];
+    }
+
+    const { rows } = await client.query(
+      `
+      UPDATE corporate_requests
+      SET status = $1,
+          updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+      `,
+      [status, requestId]
+    );
+
+    await client.query('COMMIT');
+
+    if (!rows[0]) {
+      throw new Error('Corporate request not found');
+    }
+
+    return rows[0];
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('CORPORATE REQUEST ROLLBACK ERROR:', rollbackError);
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function assignCorporateRequestGround(requestId, groundId) {
+  const numericRequestId = Number(requestId);
+  const numericGroundId = Number(groundId);
+
+  if (!Number.isInteger(numericRequestId) || numericRequestId <= 0) {
+    throw new Error('Invalid corporate request id');
   }
 
-  const { rows } = await pool.query(
-    `
-    UPDATE corporate_requests
-    SET status = $1
-    WHERE id = $2
-    RETURNING *
-    `,
-    [status, requestId]
-  );
-
-  if (!rows[0]) {
-    throw new Error('Corporate request not found');
+  if (!Number.isInteger(numericGroundId) || numericGroundId <= 0) {
+    throw new Error('Invalid ground id');
   }
 
-  return rows[0];
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const requestResult = await client.query(
+      `SELECT * FROM corporate_requests WHERE id = $1 FOR UPDATE`,
+      [numericRequestId]
+    );
+
+    const request = requestResult.rows[0];
+
+    if (!request) {
+      throw new Error('Corporate request not found');
+    }
+
+    const groundResult = await client.query(
+      `
+      SELECT id, branch_id, ground_name
+      FROM grounds
+      WHERE id = $1
+      `,
+      [numericGroundId]
+    );
+
+    const ground = groundResult.rows[0];
+
+    if (!ground) {
+      throw new Error('Ground not found');
+    }
+
+    if (Number(ground.branch_id) !== Number(request.preferred_branch_id)) {
+      throw new Error('Selected ground does not belong to the requested branch');
+    }
+
+    const { rows } = await client.query(
+      `
+      UPDATE corporate_requests
+      SET ground_id = $1,
+          updated_at = NOW()
+      WHERE id = $2
+      RETURNING *
+      `,
+      [numericGroundId, numericRequestId]
+    );
+
+    await client.query('COMMIT');
+
+    return rows[0];
+  } catch (error) {
+    try {
+      await client.query('ROLLBACK');
+    } catch (rollbackError) {
+      console.error('CORPORATE ASSIGNMENT ROLLBACK ERROR:', rollbackError);
+    }
+
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 async function getAnalytics() {
@@ -1096,4 +1351,6 @@ module.exports = {
   getAnalytics,
   getBookingById,
   getBookingsCsv,
+  getGroundAvailabilityForCorporateRequest,
+  assignCorporateRequestGround,
 };

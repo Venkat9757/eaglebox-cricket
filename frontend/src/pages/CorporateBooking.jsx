@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import axios from "axios";
 import Navbar from "../components/Navbar";
@@ -20,7 +20,7 @@ const initialForm = {
   phone: "",
   employeeCount: "",
   eventType: "Team Outing",
-  preferredBranchId: "",
+  preferredBranchId: branches[0] ? String(branches[0].id) : "",
   eventDate: "",
   preferredTime: "10:00 AM - 12:00 PM",
   groundsRequired: 1,
@@ -33,12 +33,6 @@ export default function CorporateBooking() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    if (!form.preferredBranchId && branches[0]) {
-      setForm((prev) => ({ ...prev, preferredBranchId: String(branches[0].id) }));
-    }
-  }, [form.preferredBranchId]);
 
   const handleChange = (event) => {
     const { name, value } = event.target;

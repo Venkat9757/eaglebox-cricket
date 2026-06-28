@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS corporate_requests (
   event_date DATE NOT NULL,
   preferred_time VARCHAR(20) NOT NULL,
   grounds_required INTEGER NOT NULL DEFAULT 1,
+  ground_id INTEGER REFERENCES grounds(id) ON DELETE SET NULL,
   additional_notes TEXT,
   status VARCHAR(20) NOT NULL DEFAULT 'pending',
   created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
